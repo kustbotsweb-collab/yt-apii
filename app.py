@@ -1,4 +1,3 @@
-# filename: app.py
 from flask import Flask, request, jsonify, send_file
 import yt_dlp
 import os
@@ -18,26 +17,26 @@ def init_yt_dlp_solver():
     try:
         # Check if Deno is available
         deno_check = subprocess.run(["deno", "--version"], capture_output=True, text=True)
-        
+
         if deno_check.returncode == 0:
             print(f"[INIT] Deno detected: {deno_check.stdout.strip()}")
         else:
             print("[INIT] Deno not found. Attempting to install...")
-            
+
             # Install Deno using the standard installation script
             try:
                 install_cmd = "curl -fsSL https://deno.land/x/install/install.sh | sh"
                 subprocess.run(install_cmd, shell=True, check=True)
-                
+
                 # Determine Deno bin path (usually ~/.deno/bin)
                 home_dir = os.path.expanduser("~")
                 deno_bin_path = os.path.join(home_dir, ".deno", "bin")
-                
+
                 if os.path.exists(deno_bin_path):
                     # Add to PATH environment variable for the current process
                     os.environ["PATH"] += os.pathsep + deno_bin_path
                     print(f"[INIT] Deno installed successfully to {deno_bin_path} and added to PATH.")
-                    
+
                     # Verify installation
                     verify_check = subprocess.run(["deno", "--version"], capture_output=True, text=True)
                     if verify_check.returncode == 0:
@@ -82,14 +81,35 @@ os.makedirs(CACHE_VIDEO_DIR, exist_ok=True)
 
 MAX_CACHE_SIZE = 500 * 1024 * 1024  # 500MB
 
-COOKIE_FILE_PATH = os.getenv("COOKIE_FILE_PATH", "cookies.txt")
-if COOKIE_FILE_PATH:
-    COOKIE_FILE_PATH = os.path.abspath(COOKIE_FILE_PATH)
-if COOKIE_FILE_PATH and os.path.isfile(COOKIE_FILE_PATH):
-    app.logger.info(f"Using cookie file at: {COOKIE_FILE_PATH}")
+# --- Cookie pool: read a folder of .txt cookie files and rotate through them ---
+COOKIE_DIR = os.getenv("COOKIE_DIR", "cookies")
+if COOKIE_DIR:
+    COOKIE_DIR = os.path.abspath(COOKIE_DIR)
+
+_cookie_lock = threading.Lock()
+_cookie_index = 0
+
+def _load_cookie_files():
+    if not COOKIE_DIR or not os.path.isdir(COOKIE_DIR):
+        return []
+    return sorted(glob.glob(os.path.join(COOKIE_DIR, "*.txt")))
+
+_cookie_files = _load_cookie_files()
+if _cookie_files:
+    app.logger.info(f"Loaded {len(_cookie_files)} cookie file(s) from: {COOKIE_DIR}")
 else:
-    app.logger.warning(f"Cookie file not found or unreadable at: {COOKIE_FILE_PATH}. Continuing without cookies.")
-    COOKIE_FILE_PATH = None
+    app.logger.warning(f"No cookie .txt files found in: {COOKIE_DIR}. Continuing without cookies.")
+
+def get_cookie_file():
+    """Round-robin through all cookie files in COOKIE_DIR so no single file gets hammered."""
+    global _cookie_index
+    files = _load_cookie_files()
+    if not files:
+        return None
+    with _cookie_lock:
+        cookie_file = files[_cookie_index % len(files)]
+        _cookie_index += 1
+    return cookie_file
 
 SEARCH_API_URL = "https://odd-block-a945.tenopno.workers.dev/search"
 
@@ -145,8 +165,9 @@ def make_ydl_opts_audio(output_template: str):
         'concurrent_fragment_downloads': 4,
         'n_threads': 4,
     }
-    if COOKIE_FILE_PATH:
-        opts['cookiefile'] = COOKIE_FILE_PATH
+    cookie_file = get_cookie_file()
+    if cookie_file:
+        opts['cookiefile'] = cookie_file
     return opts
 
 def make_ydl_opts_video(output_template: str):
@@ -159,8 +180,9 @@ def make_ydl_opts_video(output_template: str):
         'concurrent_fragment_downloads': 4,
         'n_threads': 4,
     }
-    if COOKIE_FILE_PATH:
-        opts['cookiefile'] = COOKIE_FILE_PATH
+    cookie_file = get_cookie_file()
+    if cookie_file:
+        opts['cookiefile'] = cookie_file
     return opts
 
 
@@ -345,8 +367,9 @@ def get_cdn_link():
             'skip_download': True,
             'quiet': True,
         }
-        if COOKIE_FILE_PATH:
-            opts['cookiefile'] = COOKIE_FILE_PATH
+        cookie_file = get_cookie_file()
+        if cookie_file:
+            opts['cookiefile'] = cookie_file
 
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(video_url, download=False)
